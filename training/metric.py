@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.ndimage import binary_dilation, binary_erosion
+from scipy.spatial import ConvexHull
 
 def iou(inputs, targets, num_objects):
     """
@@ -20,6 +21,104 @@ def iou(inputs, targets, num_objects):
         else:
             iou_list.append(intersection / union)
     return np.mean(iou_list)
+
+def giou(inputs, targets, num_objects):
+    """
+    计算 GIoU
+    :param inputs: 预测的分割结果，形状为 [H, W]
+    :param targets: 真实的分割标签，形状为 [H, W]
+    :param num_objects: mask 个数（类别数）
+    :return: GIoU 值
+    """
+    giou_list = []
+    for i in range(1, num_objects + 1):  # 假设背景是 0，从 1 开始计算各个对象的 GIoU
+        pred_mask = (inputs == i)
+        true_mask = (targets == i)
+        
+        # 计算交集和并集
+        intersection = np.logical_and(pred_mask, true_mask).sum()
+        union = np.logical_or(pred_mask, true_mask).sum()
+        
+        # 如果 union 为 0，直接返回 1.0（特殊情况处理）
+        if union == 0:
+            giou_list.append(1.0)
+            continue
+
+        pred_coords = np.argwhere(pred_mask)
+        true_coords = np.argwhere(true_mask)
+        all_coords = np.concatenate([pred_coords, true_coords], axis=0)
+        if len(all_coords) == 0:
+            giou_list.append(1.0)
+            continue
+
+        # 使用凸包代替目标检测中的最小外接矩形
+        hull = ConvexHull(all_coords[:, 1:])
+        hull_area = hull.volume  # 2D convex hull volume is the area
+        
+        # 计算 GIoU
+        giou = intersection / union - (hull_area - union) / hull_area
+        giou_list.append(giou)
+    
+    return np.mean(giou_list)
+
+
+def ciou(inputs, targets, num_objects):
+    """
+    计算 CIoU
+    :param inputs: 预测的分割结果，形状为 [H, W]
+    :param targets: 真实的分割标签，形状为 [H, W]
+    :param num_objects: mask 个数（类别数）
+    :return: CIoU 值
+    """
+    ciou_list = []
+    for i in range(1, num_objects + 1):
+        pred_mask = (inputs == i)
+        true_mask = (targets == i)
+        
+        # I和U
+        intersection = np.logical_and(pred_mask, true_mask).sum()
+        union = np.logical_or(pred_mask, true_mask).sum()
+        
+        if union == 0:
+            ciou_list.append(1.0)
+            continue
+        
+        pred_coords = np.argwhere(pred_mask)
+        true_coords = np.argwhere(true_mask)
+        
+        if len(pred_coords) == 0 or len(true_coords) == 0:
+            ciou_list.append(0.0)
+            continue
+        
+        # 外接矩形
+        x_coords = np.concatenate([pred_coords[:, 1], true_coords[:, 1]])
+        y_coords = np.concatenate([pred_coords[:, 2], true_coords[:, 2]])
+        min_x, max_x = np.min(x_coords), np.max(x_coords)
+        min_y, max_y = np.min(y_coords), np.max(y_coords)
+        # 边界框
+        pred_bbox = np.array([[np.min(pred_coords[:, 1]), np.min(pred_coords[:, 2])],
+                              [np.max(pred_coords[:, 1]), np.max(pred_coords[:, 2])]])
+        true_bbox = np.array([[np.min(true_coords[:, 1]), np.min(true_coords[:, 2])],
+                              [np.max(true_coords[:, 1]), np.max(true_coords[:, 2])]])
+        # 边界框宽/高
+        w_pred = pred_bbox[1, 0] - pred_bbox[0, 0] + 1
+        h_pred = pred_bbox[1, 1] - pred_bbox[0, 1] + 1
+        w_true = true_bbox[1, 0] - true_bbox[0, 0] + 1
+        h_true = true_bbox[1, 1] - true_bbox[0, 1] + 1
+        # 两框的中心距离
+        center_distance = np.sqrt(((pred_bbox[0, 0] + pred_bbox[1, 0]) / 2 - (true_bbox[0, 0] + true_bbox[1, 0]) / 2) ** 2 +
+                                  ((pred_bbox[0, 1] + pred_bbox[1, 1]) / 2 - (true_bbox[0, 1] + true_bbox[1, 1]) / 2) ** 2)
+        # 外接矩形面积
+        c = np.sqrt(((max_x - min_x) ** 2) + ((max_y - min_y) ** 2))
+        
+        v = (4 / (np.pi ** 2)) * (np.arctan(w_true / h_true) - np.arctan(w_pred / h_pred)) ** 2
+        
+        alpha = v / (1 - intersection / union + v)
+        
+        ciou = intersection / union - (center_distance ** 2) / c ** 2 - alpha * v
+        ciou_list.append(ciou)
+    
+    return np.mean(ciou_list)
 
 def dice(inputs, targets, num_objects):
     """
@@ -99,6 +198,12 @@ def boundary_f1_score(inputs, targets, num_objects):
 
     return np.mean(f1_list)
 
+def estimate(inputs_list, targets_list, num_objects, metric_dict):
+    for inputs, targets in zip(inputs_list, targets_list):
+        for (metric_name, metric_func), score_list in metric_dict.items():
+            score_list.append(metric_func(inputs, targets, num_objects))
+    return metric_dict
+
 # 示例
 if __name__ == "__main__":
     # 第一张图片
@@ -123,18 +228,9 @@ if __name__ == "__main__":
     targets_list = [targets1, targets2]
     num_objects = 2
 
-    iou_scores = []
-    dice_scores = []
-    pixel_acc_scores = []
-    boundary_f1_scores = []
+    metric_dict = {("IoU", iou): [], ("GIoU", giou): [], ("CIoU", ciou): [], ("Dice", dice): [], ("Pixel Accuracy", pixel_accuracy): [], ("Boundary F1 Score", boundary_f1_score): []}
+    num_objects = 1
+    metric_dict = estimate(inputs_list, targets_list, num_objects, metric_dict)
 
-    for inputs, targets in zip(inputs_list, targets_list):
-        iou_scores.append(iou(inputs, targets, num_objects))
-        dice_scores.append(dice(inputs, targets, num_objects))
-        pixel_acc_scores.append(pixel_accuracy(inputs, targets, num_objects))
-        boundary_f1_scores.append(boundary_f1_score(inputs, targets, num_objects))
-
-    print("Average IoU:", np.mean(iou_scores))
-    print("Average Dice:", np.mean(dice_scores))
-    print("Average Pixel Accuracy:", np.mean(pixel_acc_scores))
-    print("Average Boundary F1 Score:", np.mean(boundary_f1_scores))
+    for (metric_name, _), score_list in metric_dict.items():
+        print(f"Average {metric_name}:", np.mean(score_list))

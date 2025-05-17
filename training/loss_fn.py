@@ -1,11 +1,13 @@
 from collections import defaultdict
 from typing import Dict, List, Tuple
 
+import time
 import torch
 import torch.distributed
 import torch.nn as nn
 import torch.nn.functional as F
-
+from scipy.spatial import ConvexHull
+import numpy as np
 
 def dice_loss(inputs, targets, num_objects, loss_on_multimask=False):
     """
@@ -141,6 +143,77 @@ def iou_loss(
         return loss / num_objects
     return loss.sum() / num_objects
 
+def giou_loss(inputs, targets, num_objects, loss_on_multimask=False):
+    """
+    GIoU 损失函数
+    Args:
+        inputs: 预测的分割结果，形状为 [bs, n, H, W]
+        targets: 真实的分割标签，形状为 [bs, n, H, W]
+        num_objects: mask 个数（类别数）
+        loss_on_multimask: 是否对每个 mask 单独计算损失
+    Returns:
+        GIoU 损失值
+    """
+    bs, n, H, W = inputs.shape
+
+    # 提取预测和真实的目标 mask
+    pred_mask = inputs > 0  # [bs, n, H, W]
+    gt_mask = targets > 0   # [bs, n, H, W]
+
+    # 计算交集和并集
+    intersection = torch.sum(pred_mask & gt_mask, dim=(2, 3)).float()  # [bs, n]
+    union = torch.sum(pred_mask | gt_mask, dim=(2, 3)).float()  # [bs, n]
+
+    # 计算边界框
+    # 初始化边界框坐标
+    pred_bbox = torch.zeros((bs, n, 4), device=inputs.device)  # [bs, n, 4] (x1, y1, x2, y2)
+    gt_bbox = torch.zeros((bs, n, 4), device=inputs.device)  # [bs, n, 4] (x1, y1, x2, y2)
+
+    # 获取预测和真实目标的非零坐标
+    pred_coords = torch.nonzero(pred_mask, as_tuple=False)  # [num_points, 4], (bs, n, H, W)
+    gt_coords = torch.nonzero(gt_mask, as_tuple=False)  # [num_points, 4], (bs, n, H, W)
+
+    # 如果没有非零点，直接返回损失为0
+    if pred_coords.numel() == 0 or gt_coords.numel() == 0:
+        return torch.zeros(1, device=inputs.device)
+
+    # 计算预测边界框的坐标
+    pred_min_coords = torch.min(pred_coords[:, 2:], dim=0).values  # [2] (min_H, min_W)
+    pred_max_coords = torch.max(pred_coords[:, 2:], dim=0).values  # [2] (max_H, max_W)
+    pred_bbox[:, :, 0] = pred_min_coords[1]  # x1
+    pred_bbox[:, :, 1] = pred_min_coords[0]  # y1
+    pred_bbox[:, :, 2] = pred_max_coords[1]  # x2
+    pred_bbox[:, :, 3] = pred_max_coords[0]  # y2
+
+    # 计算真实边界框的坐标
+    gt_min_coords = torch.min(gt_coords[:, 2:], dim=0).values  # [2] (min_H, min_W)
+    gt_max_coords = torch.max(gt_coords[:, 2:], dim=0).values  # [2] (max_H, max_W)
+    gt_bbox[:, :, 0] = gt_min_coords[1]  # x1
+    gt_bbox[:, :, 1] = gt_min_coords[0]  # y1
+    gt_bbox[:, :, 2] = gt_max_coords[1]  # x2
+    gt_bbox[:, :, 3] = gt_max_coords[0]  # y2
+
+    # 计算边界框的交集和并集
+    x1 = torch.max(pred_bbox[:, :, 0], gt_bbox[:, :, 0])  # [bs, n]
+    y1 = torch.max(pred_bbox[:, :, 1], gt_bbox[:, :, 1])  # [bs, n]
+    x2 = torch.min(pred_bbox[:, :, 2], gt_bbox[:, :, 2])  # [bs, n]
+    y2 = torch.min(pred_bbox[:, :, 3], gt_bbox[:, :, 3])  # [bs, n]
+
+    # 计算交集面积
+    intersection_bbox = torch.clamp(x2 - x1, min=0) * torch.clamp(y2 - y1, min=0)  # [bs, n]
+
+    # 计算并集面积
+    pred_area = (pred_bbox[:, :, 2] - pred_bbox[:, :, 0]) * (pred_bbox[:, :, 3] - pred_bbox[:, :, 1])  # [bs, n]
+    gt_area = (gt_bbox[:, :, 2] - gt_bbox[:, :, 0]) * (gt_bbox[:, :, 3] - gt_bbox[:, :, 1])  # [bs, n]
+    union_bbox = pred_area + gt_area - intersection_bbox  # [bs, n]
+
+    # 计算 GIoU 损失
+    loss = 1 - (intersection / union - (union_bbox - union) / union_bbox)  # [bs, n]
+
+    if loss_on_multimask:
+        return loss / num_objects
+    return loss.sum() / (bs * num_objects)
+
 def total_loss(
     inputs,
     targets,
@@ -154,6 +227,7 @@ def total_loss(
     focal_weight: float = 1.0,
     diou_weight: float = 1.0,
     iou_weight: float = 1.0,
+    giou_weight: float = 1.0,
 ) -> Tuple[torch.Tensor, Dict]:
     """
     Compute the total loss by combining Dice loss, Focal loss, and IoU loss.
@@ -185,6 +259,7 @@ def total_loss(
     focal = sigmoid_focal_loss(inputs, targets, num_objects, alpha, gamma, loss_on_multimask)
     diou = diou_loss(inputs, targets, pred_ious, num_objects, loss_on_multimask, use_l1_loss)
     iou = iou_loss(inputs, targets, num_objects, loss_on_multimask)
+    # giou = giou_loss(inputs, targets, num_objects, loss_on_multimask)
 
     # Combine losses with weights
     total = dice_weight * dice + focal_weight * focal + diou_weight * diou + iou * iou_weight

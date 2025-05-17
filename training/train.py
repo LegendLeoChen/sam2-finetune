@@ -46,7 +46,7 @@ def train_epoch(predictor, train_dataloader, epoch, optimizer, scaler, scheduler
         with autocast('cuda', torch.bfloat16):  # 混合精度训练
             prd_masks, prd_scores, prd_mask = forward_net(predictor, image, use_prompt, input_point if use_prompt else None, input_label if use_prompt else None)
             loss, losses = total_loss(inputs=prd_masks, targets=gt_mask, pred_ious=prd_scores, num_objects=image.shape[0],
-                                    dice_weight=0.4, focal_weight=12.0, diou_weight=5.0, iou_weight=2.0)
+                                    dice_weight=0.4, focal_weight=12.0, diou_weight=5.0, iou_weight=2.0, giou_weight=0.2)
 
         loss = loss / accumulation_steps
 
@@ -61,7 +61,8 @@ def train_epoch(predictor, train_dataloader, epoch, optimizer, scaler, scheduler
         # 可视化
         if (batch_idx + 1) % 50 == 0:
             print(f"Epoch {epoch}, Batch {batch_idx + 1}, Loss: {loss.item() * accumulation_steps: 3f},", 
-                  f"Dice Loss: {losses['dice'].item(): 2f}, Focal Loss: {losses['focal'].item(): 2f}, dIOU Loss: {losses['diou'].item(): 2f}, IOU Loss: {losses['iou'].item(): 2f}")
+                  f"Dice Loss: {losses['dice'].item(): 2f}, Focal Loss: {losses['focal'].item(): 2f}, dIOU Loss: {losses['diou'].item(): 2f},", "" \
+                  f"IOU Loss: {losses['iou'].item(): 2f}")
         writer.add_scalar('train/total loss', loss.item() * accumulation_steps, step)
         writer.add_scalar('lr', optimizer.param_groups[0]['lr'], step)
         for key, value in losses.items():
@@ -78,7 +79,7 @@ def validate(predictor, val_dataloader, epoch, writer, use_prompt=False):
             gt_mask = mask.float().to(device).unsqueeze(1)
             prd_masks, prd_scores, prd_mask = forward_net(predictor, image, use_prompt, input_point if use_prompt else None, input_label if use_prompt else None)
             val_loss, val_losses = total_loss(inputs=prd_masks, targets=gt_mask, pred_ious=prd_scores, num_objects=image.shape[0],
-                                    dice_weight=0.4, focal_weight=12.0, diou_weight=5.0, iou_weight=2.0)
+                                    dice_weight=0.4, focal_weight=12.0, diou_weight=5.0, iou_weight=2.0, giou_weight=0.2)
             total_val_loss += val_loss.item()
     total_val_loss /= len(val_dataloader)
     predictor.model.sam_mask_decoder.train(True)
@@ -87,10 +88,21 @@ def validate(predictor, val_dataloader, epoch, writer, use_prompt=False):
 
 
 if __name__ == "__main__":
+    # 配置参数
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-    batch_size = 32
+    batch_size = 32                     # 批次大小
     model_scale_dict = {"b+": "base_plus", "l": "large", "s": "small", "t": "tiny"}
-    model_scale = "t"
+    model_scale = "l"                  # 模型大小
+    learning_rate = 2e-4                # 学习率
+    weight_decay = 4e-5                 # 权重衰减
+    T_max = 300                         # 余弦调度器半周期
+    accumulation_steps = 4              # 梯度积累
+    use_prompt = False                  # 是否使用提示
+    epoches = 900                       # 迭代数
+    use_pretrained_model = True         # 是否用预训练权重
+    pretrained_pt = (13, 100)           # exp{0}文件夹下的{1}epoch权重
+    eval_interval = 20                  # 验证间隔
+    save_interval = 50                  # 保存权重间隔
 
     # 定义颜色增强
     train_transform = transforms.Compose([
@@ -120,20 +132,17 @@ if __name__ == "__main__":
     model_cfg = f"../sam2_configs/sam2_hiera_{model_scale}.yaml"
     sam2_model = build_sam2(model_cfg, sam2_checkpoint, device="cuda")
     predictor = SAM2ImagePredictor(sam2_model)
-    # predictor.model.load_state_dict(torch.load(f"./output/exp{13}/model_epoch_{100}.pt"))
+    if use_pretrained_model:
+        predictor.model.load_state_dict(torch.load(f"./output/exp{pretrained_pt[0]}/model_epoch_{pretrained_pt[1]}.pt"))
 
     # 设置训练参数
     predictor.model.sam_mask_decoder.train(True)
     predictor.model.sam_prompt_encoder.train(False)
     predictor.model.image_encoder.train(False)
-    optimizer = torch.optim.AdamW(params=predictor.model.parameters(), lr=2e-4, weight_decay=4e-5)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200, eta_min=5e-8)
+    optimizer = torch.optim.AdamW(params=predictor.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max, eta_min=5e-8)
     scaler = GradScaler('cuda')
     writer = SummaryWriter(log_dir="output")
-
-    accumulation_steps = 4
-    use_prompt = False
-    epoches = 1000
 
     print("train on")   
     # 训练循环
@@ -141,11 +150,10 @@ if __name__ == "__main__":
         # 训练环节
         train_epoch(predictor, train_dataloader, epoch, optimizer, scaler, scheduler, writer, use_prompt, accumulation_steps)
         # 验证环节
-        if (epoch + 1) % 20 == 0:
+        if (epoch + 1) % eval_interval == 0:
             validate(predictor, val_dataloader, epoch, writer, use_prompt)
 
-        if (epoch + 1) % 50 == 0:
-            # 每20个 epoch 保存一次模型
+        if (epoch + 1) % save_interval == 0:
             torch.save(predictor.model.state_dict(), f"./output/model_epoch_{epoch + 1}.pt")
 
     writer.close()
