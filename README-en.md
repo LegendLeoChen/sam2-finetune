@@ -1,5 +1,5 @@
 # Overview
-Based on [SAM2](https://github.com/facebookresearch/sam2), scripts for prediction, training, validation, and evaluation using SAM2 on the [LabPicsV1 dataset](https://zenodo.org/records/3697452/files/LabPicsV1.zip?download=1) have been implemented, including both prompt and no-prompt scenarios.
+Based on [SAM2](https://github.com/facebookresearch/sam2), scripts for prediction, training, validation, and evaluation using SAM2 on the [LabPicsV1 dataset](https://zenodo.org/records/3697452/files/LabPicsV1.zip?download=1) and [ADE20K dataset](http://data.csail.mit.edu/places/ADEchallenge/ADEChallengeData2016.zip) have been implemented, including both prompt and no-prompt scenarios.
 
 ![Fine-tuning Contrast](./assets/contrast.png)
 

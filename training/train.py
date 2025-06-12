@@ -11,7 +11,8 @@ import sys
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from training.loss_fn import total_loss
-from training.dataset import LabPicsDataset
+from training.dataset import LabPicsDataset, SemSegDataset
+from tqdm import tqdm
 
 os.chdir(sys.path[0])
 
@@ -40,8 +41,9 @@ def forward_net(predictor, image_list, use_prompt=False, input_point=None, input
 # 训练一代
 def train_epoch(predictor, train_dataloader, epoch, optimizer, scaler, scheduler, writer, use_prompt=False, accumulation_steps=4):
     step = len(train_dataloader) * epoch
-    for batch_idx, (image, mask, input_point, input_label) in enumerate(train_dataloader):
-        gt_mask = mask.float().to(device).unsqueeze(1)
+    progress_bar = tqdm(train_dataloader, colour='green')
+    for batch_idx, (image, mask, input_point, input_label) in enumerate(progress_bar):
+        gt_mask = mask.float().to(device)
         step += 1
         with autocast('cuda', torch.bfloat16):  # 混合精度训练
             prd_masks, prd_scores, prd_mask = forward_net(predictor, image, use_prompt, input_point if use_prompt else None, input_label if use_prompt else None)
@@ -58,11 +60,14 @@ def train_epoch(predictor, train_dataloader, epoch, optimizer, scaler, scheduler
             scaler.update()
             optimizer.zero_grad()
 
-        # 可视化
-        if (batch_idx + 1) % 50 == 0:
-            print(f"Epoch {epoch}, Batch {batch_idx + 1}, Loss: {loss.item() * accumulation_steps: 3f},", 
-                  f"Dice Loss: {losses['dice'].item(): 2f}, Focal Loss: {losses['focal'].item(): 2f}, dIOU Loss: {losses['diou'].item(): 2f},", "" \
-                  f"IOU Loss: {losses['iou'].item(): 2f}")
+            progress_bar.set_postfix({
+                'Loss': f'{loss.item() * accumulation_steps:.3f}',
+                'Dice Loss': f'{losses["dice"].item():.2f}',
+                'Focal Loss': f'{losses["focal"].item():.2f}',
+                'dIOU Loss': f'{losses["diou"].item():.2f}',
+                'IOU Loss': f'{losses["iou"].item():.2f}'
+            })
+
         writer.add_scalar('train/total loss', loss.item() * accumulation_steps, step)
         writer.add_scalar('lr', optimizer.param_groups[0]['lr'], step)
         for key, value in losses.items():
@@ -75,8 +80,8 @@ def validate(predictor, val_dataloader, epoch, writer, use_prompt=False):
     predictor.model.sam_mask_decoder.train(False)
     total_val_loss = 0.0
     with torch.no_grad():
-        for batch_idx, (image, mask, input_point, input_label) in enumerate(val_dataloader):    
-            gt_mask = mask.float().to(device).unsqueeze(1)
+        for batch_idx, (image, mask, input_point, input_label) in enumerate(tqdm(val_dataloader, colour='blue')):    
+            gt_mask = mask.float().to(device)
             prd_masks, prd_scores, prd_mask = forward_net(predictor, image, use_prompt, input_point if use_prompt else None, input_label if use_prompt else None)
             val_loss, val_losses = total_loss(inputs=prd_masks, targets=gt_mask, pred_ious=prd_scores, num_objects=image.shape[0],
                                     dice_weight=0.4, focal_weight=12.0, diou_weight=5.0, iou_weight=2.0, giou_weight=0.2)
@@ -92,17 +97,17 @@ if __name__ == "__main__":
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     batch_size = 32                     # 批次大小
     model_scale_dict = {"b+": "base_plus", "l": "large", "s": "small", "t": "tiny"}
-    model_scale = "l"                  # 模型大小
+    model_scale = "l"                   # 模型大小
     learning_rate = 2e-4                # 学习率
     weight_decay = 4e-5                 # 权重衰减
-    T_max = 300                         # 余弦调度器半周期
+    T_max = 40                         # 余弦调度器半周期
     accumulation_steps = 4              # 梯度积累
-    use_prompt = False                  # 是否使用提示
-    epoches = 900                       # 迭代数
+    use_prompt = True                  # 是否使用提示
+    epoches = 50                       # 迭代数
     use_pretrained_model = True         # 是否用预训练权重
-    pretrained_pt = (13, 100)           # exp{0}文件夹下的{1}epoch权重
-    eval_interval = 20                  # 验证间隔
-    save_interval = 50                  # 保存权重间隔
+    pretrained_pt = (16, 50)           # exp{0}文件夹下的{1}epoch权重
+    eval_interval = 1                  # 验证间隔
+    save_interval = 10                  # 保存权重间隔
 
     # 定义颜色增强
     train_transform = transforms.Compose([
@@ -122,9 +127,11 @@ if __name__ == "__main__":
     ])
 
     # 数据集和数据加载器
-    train_dataset = LabPicsDataset("../assets/LabPicsV1/Simple/Train/", transform=train_transform)
+    # train_dataset = LabPicsDataset("../assets/LabPicsV1/Simple/Train", transform=train_transform)
+    train_dataset = SemSegDataset("../../datasets", dataset_type="training", transform=transforms.ToTensor())
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
-    val_dataset = LabPicsDataset("../assets/LabPicsV1/Simple/Test", transform=val_transform)
+    # val_dataset = LabPicsDataset("../assets/LabPicsV1/Simple/Test", transform=val_transform)
+    val_dataset = SemSegDataset("../../datasets", dataset_type="validation", transform=transforms.ToTensor())
     val_dataloader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=4)
 
     # 加载模型
@@ -144,7 +151,7 @@ if __name__ == "__main__":
     scaler = GradScaler('cuda')
     writer = SummaryWriter(log_dir="output")
 
-    print("train on")   
+    print("train on")
     # 训练循环
     for epoch in range(epoches):
         # 训练环节

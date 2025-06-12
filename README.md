@@ -1,5 +1,5 @@
 # 概述
-基于[SAM2](https://github.com/facebookresearch/sam2)，使用[LabPicsV1数据集](https://zenodo.org/records/3697452/files/LabPicsV1.zip?download=1)实现了使用SAM2进行预测、训练、验证、评估的脚本，包括有prompt和无prompt情况。
+基于[SAM2](https://github.com/facebookresearch/sam2)，使用[LabPicsV1数据集](https://zenodo.org/records/3697452/files/LabPicsV1.zip?download=1)和[ADE20K数据集](http://data.csail.mit.edu/places/ADEchallenge/ADEChallengeData2016.zip)实现了使用SAM2进行预测、训练、验证、评估的脚本，包括有prompt和无prompt情况。
 
 ![微调前后对比](./assets/contrast.png)
 
@@ -15,7 +15,7 @@
 
 # 结构
 改动都在training文件夹下：
-- dataset.py：LabPics数据集;
+- dataset.py：数据集;
 - loss_fn.py：损失函数；
 - metric.py：评估指标；
 - predict.py：预测脚本，预测单张图片；

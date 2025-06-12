@@ -60,24 +60,25 @@ def show_masks(image, masks, scores, point_coords=None, box_coords=None, input_l
         plt.axis('off')
         plt.show()
 
-# image = Image.open('../notebooks/images/truck.jpg')
-image = Image.open('../assets/LabPicsV1/Simple/Test/Image/NileRed_How to Dissolve Cotton in Water-screenshot (9).jpg')
-# image = Image.open('../assets/LabPicsV1/Simple/Train/Image/A Gas Phase Reaction- Producing Ammonium Chloride-screenshot (2).jpg')
-image = np.asarray(image.convert("RGB"))
 
 sam2_checkpoint = "../checkpoints/sam2_hiera_large.pt"
 model_cfg = "../sam2_configs/sam2_hiera_l.yaml"
 
 sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=device)
 predictor = SAM2ImagePredictor(sam2_model)
-predictor.model.load_state_dict(torch.load("./output/exp2/model_epoch_120.pt"))
+# predictor.model.load_state_dict(torch.load("./output/exp13/model_epoch_100.pt"))
 
+# 预测单图
+# image = Image.open('../notebooks/images/truck.jpg')
+# image = Image.open('../assets/LabPicsV1/Simple/Test/Image/Sagi_Fire that change color in response to a magnetic field-screenshot (1).jpg')
+image = Image.open('../../datasets/ade20k/images/validation/ADE_val_00000128.jpg')
+image = np.asarray(image.convert("RGB"))
 predictor.set_image(image)
 
 input_point = None
 input_label = None
-# input_point = np.array([[100, 175]])
-# input_label = np.array([1])
+input_point = np.array([[200, 250]])
+input_label = np.array([1])
 
 a = time.time()
 masks, scores, logits = predictor.predict(
@@ -92,3 +93,44 @@ scores = scores[sorted_ind]
 logits = logits[sorted_ind]
 
 show_masks(image, masks, scores, point_coords=input_point, input_labels=input_label, borders=True)
+
+# 预测多图
+# image1 = Image.open('../notebooks/images/truck.jpg')
+# image1 = np.asarray(image1.convert("RGB"))
+# image1_boxes = np.array([
+#     [75, 275, 1725, 850],
+#     [425, 600, 700, 875],
+#     [1375, 550, 1650, 800],
+#     [1240, 675, 1400, 750],
+# ])
+
+# image2 = Image.open('../notebooks/images/groceries.jpg')
+# image2 = np.asarray(image2.convert("RGB"))
+# image2_boxes = np.array([
+#     [450, 170, 520, 350],
+#     [350, 190, 450, 350],
+#     [500, 170, 580, 350],
+#     [580, 170, 640, 350],
+# ])
+
+# img_batch = [image1, image2]
+# boxes_batch = [image1_boxes, image2_boxes]
+
+# predictor.set_image_batch(img_batch)
+
+# masks_batch, scores_batch, _ = predictor.predict_batch(
+#     None,
+#     None, 
+#     box_batch=boxes_batch, 
+#     multimask_output=False
+# )
+
+# for image, boxes, masks in zip(img_batch, boxes_batch, masks_batch):
+#     plt.figure(figsize=(10, 10))
+#     plt.imshow(image)
+#     for mask in masks:
+#         show_mask(mask.squeeze(0), plt.gca(), random_color=True)
+#     for box in boxes:
+#         show_box(box, plt.gca())
+
+# plt.show()

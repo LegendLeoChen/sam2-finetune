@@ -133,9 +133,10 @@ def dice(inputs, targets, num_objects):
         pred_mask = (inputs == i)
         true_mask = (targets == i)
         intersection = np.logical_and(pred_mask, true_mask).sum()
-        dice_value = (2. * intersection) / (pred_mask.sum() + true_mask.sum())
-        dice_list.append(dice_value)
-    return np.mean(dice_list)
+        if true_mask.sum():
+            dice_value = (2. * intersection) / (pred_mask.sum() + true_mask.sum())
+            dice_list.append(dice_value)
+    return np.mean(dice_list) if len(dice_list) else 1
 
 def pixel_accuracy(inputs, targets, num_objects):
     """
